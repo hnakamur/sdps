@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
-	"log"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -36,28 +35,34 @@ const (
 var cli CLI
 
 type CLI struct {
-	Service   []string `short:"s" help:"systemd service name"`
-	Headers   bool     `default:"true" negatable:"" help:"show headers"`
-	FormatSep string   `default:";" help:"separator character(s) for --format" env:"MYPS_FORMAT_SEP"`
-	Format    string   `short:"o" default:"PID,R,{{.PID}};PPID,R,{{.PPID}};VSZ,R,{{.VSZ|iBytes}};RSS,R,{{.RSS|iBytes}};START,L,{{.START|format \"2006-01-02 15:04\"}};UPTIME,R,{{.UPTIME|duration}};COMMAND,L,{{.COMMAND}}" env:"MYPS_FORMAT" help:"title, align, and template for columns"`
-	Version   bool     `help:"show version and exit"`
+	Service      []string          `group:"process" short:"s" help:"systemd service name"`
+	Filter       string            `group:"process" help:"filter for command line of process"`
+	Header       bool              `group:"output" default:"true" negatable:"" help:"show header"`
+	Field        []string          `group:"output" default:"PID,PPID,VSZ,RSS,START,UPTIME,COMMAND" help:"fields to print in output"`
+	Func         map[string]string `group:"output" default:"VSZ=iBytes;RSS=iBytes;START=format \"2006-01-02 15:04\";UPTIME=duration" help:"post-presssing pipe for values in Go's text/template syntax after \"|\""`
+	DefaultAlign string            `group:"output" default:"R" help:"default alignment for fields"`
+	Align        map[string]string `group:"output" default:"COMMAND=L" help:"overriding alignments for fields"`
+	Agg          string            `group:"output" help:"aggregate single field value of processes, ex: --field=UPTIME --agg=min"`
+	Version      bool              `help:"show version and exit"`
 }
 
 const (
-	colTitlePID     = "PID"
-	colTitlePPID    = "PPID"
-	colTitleVSZ     = "VSZ"
-	colTitleRSS     = "RSS"
-	colTitleStart   = "START"
-	colTitleUptime  = "UPTIME"
-	colTitleCommand = "COMMAND"
+	fieldPID     = "PID"
+	fieldPPID    = "PPID"
+	fieldVSZ     = "VSZ"
+	fieldRSS     = "RSS"
+	fieldStart   = "START"
+	fieldUptime  = "UPTIME"
+	fieldCommand = "COMMAND"
 )
 
 const (
-	alignLeft       = "left"
-	alignLeftShort  = "L"
-	alignRight      = "right"
-	alignRightShort = "R"
+	alignLeft  = "L"
+	alignRight = "R"
+)
+
+const (
+	aggMin = "min"
 )
 
 func (c *CLI) Run(ctx context.Context) error {
@@ -66,11 +71,18 @@ func (c *CLI) Run(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("headers=%v", c.Headers)
-
-	columns, err := parseColumns(strings.Split(c.Format, c.FormatSep))
+	columns, err := buildColumns(c.Field, c.Func, c.Align, c.DefaultAlign)
 	if err != nil {
 		return err
+	}
+
+	if c.Agg != "" {
+		if len(columns) != 1 || columns[0].Field != fieldUptime {
+			return errors.New("flag --agg is supported only for --field=UPTIME")
+		}
+		if c.Agg != aggMin {
+			return errors.New("only supported value for flag --agg is \"min\"")
+		}
 	}
 
 	pids, err := getPidsOfServices(c.Service)
@@ -82,19 +94,33 @@ func (c *CLI) Run(ctx context.Context) error {
 		return err
 	}
 
-	rows, err := convertProcessRawRecordsToTableRows(columns, records)
+	if c.Filter != "" {
+		records = filterProcessRawRecordsWithCmdline(records, c.Filter)
+	}
+
+	rows, err := convertProcessRawRecordsToTableRows(columns, records, c.Agg)
 	if err != nil {
 		return err
 	}
 
-	header := convertColumnsToHeader(columns)
-	headerAndRows := make([][]string, 0, 1+len(rows))
-	headerAndRows = append(append(headerAndRows, header), rows...)
+	var unalignedRows [][]string
+	if c.Header {
+		header := convertColumnsToHeader(columns)
+		unalignedRows = make([][]string, 0, 1+len(rows))
+		unalignedRows = append(append(unalignedRows, header), rows...)
+	} else {
+		unalignedRows = rows
+	}
 
-	alignments := convertColumnsToAlign(columns)
-	alignedRows, err := align.AlignColumns(headerAndRows, alignments)
-	if err != nil {
-		return err
+	var alignedRows [][]string
+	if len(unalignedRows) <= 1 {
+		alignedRows = unalignedRows
+	} else {
+		alignments := convertColumnsToAlign(columns)
+		alignedRows, err = align.AlignColumns(unalignedRows, alignments)
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, row := range alignedRows {
@@ -103,66 +129,69 @@ func (c *CLI) Run(ctx context.Context) error {
 	return nil
 }
 
+func filterProcessRawRecordsWithCmdline(records []ProcessRawRecord, filter string) []ProcessRawRecord {
+	var filtered []ProcessRawRecord
+	for _, record := range records {
+		if strings.Contains(record.Command.String(), filter) {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered
+}
+
 type Column struct {
-	Title    string
+	Field    string
 	Align    align.Align
 	Template *template.Template
 }
 
-func parseColumns(input []string) ([]Column, error) {
-	columns := make([]Column, len(input))
-	for i, columnText := range input {
-		var err error
-		columns[i], err = parseColumn(columnText)
-		if err != nil {
-			return nil, err
+func buildColumns(fields []string, funcCalls, alignments map[string]string, defaultAlign string) ([]Column, error) {
+	columns := make([]Column, len(fields))
+	for i, field := range fields {
+		switch field {
+		case fieldPID, fieldPPID, fieldVSZ, fieldRSS, fieldStart,
+			fieldUptime, fieldCommand:
+
+			columns[i].Field = field
+		default:
+			return nil, fmt.Errorf("invalid field: %s, must be one of %s", field,
+				strings.Join([]string{fieldPID, fieldPPID, fieldVSZ, fieldRSS, fieldStart,
+					fieldUptime, "or " + fieldCommand}, ", "))
 		}
+
+		a, ok := alignments[field]
+		if !ok {
+			a = defaultAlign
+		}
+		switch a {
+		case alignLeft:
+			columns[i].Align = align.Left
+		case alignRight:
+			columns[i].Align = align.Right
+		default:
+			return nil, fmt.Errorf("invalid align: %s, must be %s or %s", a, alignLeft, alignRight)
+		}
+
+		var tmplText string
+		if funcCall, ok := funcCalls[field]; ok {
+			tmplText = fmt.Sprintf("{{.%s|%s}}", field, funcCall)
+		} else {
+			tmplText = fmt.Sprintf("{{.%s}}", field)
+		}
+		tmpl, err := template.New("").Funcs(templateFuncMap).Parse(tmplText)
+		if err != nil {
+			return nil,
+				fmt.Errorf("cannot parse template: %s, err=%s", tmplText, err)
+		}
+		columns[i].Template = tmpl
 	}
 	return columns, nil
-}
-
-func parseColumn(input string) (Column, error) {
-	terms := strings.SplitN(input, ",", 3)
-	if len(terms) != 3 {
-		return Column{}, fmt.Errorf("column must be in form TITLE,ALIGN,TEMPLATE: %s", input)
-	}
-
-	var column Column
-
-	switch terms[0] {
-	case colTitlePID, colTitlePPID, colTitleVSZ, colTitleRSS, colTitleStart,
-		colTitleUptime, colTitleCommand:
-
-		column.Title = terms[0]
-	default:
-		return Column{}, fmt.Errorf("invalid column title: %s", terms[0])
-	}
-
-	switch terms[1] {
-	case alignLeft, alignLeftShort:
-		column.Align = align.Left
-	case alignRight, alignRightShort:
-		column.Align = align.Right
-	default:
-		return Column{},
-			fmt.Errorf("align must be one of %s, %s, %s, or %s: %s in %s",
-				alignLeft, alignLeftShort, alignRight, alignRightShort,
-				terms[1], input)
-	}
-
-	tmpl, err := template.New("").Funcs(templateFuncMap).Parse(terms[2])
-	if err != nil {
-		return Column{},
-			fmt.Errorf("cannot parse template: %s, err=%s", terms[2], err)
-	}
-	column.Template = tmpl
-	return column, nil
 }
 
 func convertColumnsToHeader(columns []Column) []string {
 	row := make([]string, len(columns))
 	for i, column := range columns {
-		row[i] = column.Title
+		row[i] = column.Field
 	}
 	return row
 }
@@ -233,49 +262,122 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dy%dm%dd%s", year, month, day, rest)
 }
 
-func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawRecord) ([][]string, error) {
-	pageSize, err := getPageSize()
-	if err != nil {
-		return nil, err
+func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawRecord, agg string) ([][]string, error) {
+	hasPID := false
+	hasPPID := false
+	hasVSZ := false
+	hasRSS := false
+	hasStart := false
+	hasUptime := false
+	hasCommand := false
+	for _, column := range columns {
+		switch column.Field {
+		case fieldPID:
+			hasPID = true
+		case fieldPPID:
+			hasPPID = true
+		case fieldVSZ:
+			hasVSZ = true
+		case fieldRSS:
+			hasRSS = true
+		case fieldStart:
+			hasStart = true
+		case fieldUptime:
+			hasUptime = true
+		case fieldCommand:
+			hasCommand = true
+		}
 	}
 
-	bootTime, err := getBootTime()
-	if err != nil {
-		return nil, err
+	var err error
+	var pageSize int
+	if hasRSS {
+		pageSize, err = getPageSize()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	now := time.Now()
+	var bootTime time.Time
+	if hasStart || hasUptime {
+		bootTime, err = getBootTime()
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	rows := make([][]string, len(records))
+	var now time.Time
+	if hasUptime {
+		now = time.Now()
+	}
+
+	dataList := make([]map[string]any, len(records))
 	for i, record := range records {
-		vsizeInBytes, err := record.VSize.InBytes()
-		if err != nil {
-			return nil, err
+		data := make(map[string]any)
+
+		if hasPID {
+			data[fieldPID] = record.Pid
+		}
+		if hasPPID {
+			data[fieldPPID] = record.PPid
+		}
+		if hasVSZ {
+			vsizeInBytes, err := record.VSize.InBytes()
+			if err != nil {
+				return nil, err
+			}
+			data[fieldVSZ] = vsizeInBytes
+		}
+		if hasRSS {
+			rssPageCount, err := record.RSS.InPages()
+			if err != nil {
+				return nil, err
+			}
+			rssInBytes := rssPageCount * uint64(pageSize)
+			data[fieldRSS] = rssInBytes
+		}
+		if hasStart || hasUptime {
+			start, err := record.StartTime.AsTime(bootTime)
+			if err != nil {
+				return nil, err
+			}
+
+			if hasStart {
+				data[fieldStart] = start
+			}
+			if hasUptime {
+				data[fieldUptime] = now.Sub(start).Truncate(time.Second)
+			}
+		}
+		if hasCommand {
+			data[fieldCommand] = record.Command
 		}
 
-		rssPageCount, err := record.RSS.InPages()
-		if err != nil {
-			return nil, err
+		dataList[i] = data
+	}
+
+	if agg == aggMin {
+		if len(dataList) > 1 {
+			data := dataList[0]
+			uptime := data[fieldUptime].(time.Duration)
+			for i := range dataList {
+				if dataList[i][fieldUptime].(time.Duration) < uptime {
+					data = dataList[i]
+					uptime = dataList[i][fieldUptime].(time.Duration)
+				}
+			}
+			dataList = []map[string]any{data}
+		} else if len(dataList) == 0 {
+			dataList = []map[string]any{
+				{
+					fieldUptime: time.Duration(0),
+				},
+			}
 		}
-		rssInBytes := rssPageCount * uint64(pageSize)
+	}
 
-		start, err := record.StartTime.AsTime(bootTime)
-		if err != nil {
-			return nil, err
-		}
-
-		uptime := now.Sub(start).Truncate(time.Second)
-
-		data := map[string]any{
-			"PID":     record.Pid,
-			"PPID":    record.PPid,
-			"VSZ":     vsizeInBytes,
-			"RSS":     rssInBytes,
-			"START":   start,
-			"UPTIME":  uptime,
-			"COMMAND": record.Command,
-		}
-
+	rows := make([][]string, len(dataList))
+	for i, data := range dataList {
 		rows[i] = make([]string, len(columns))
 		for j, col := range columns {
 			var err error
@@ -296,7 +398,6 @@ func renderTemplate(tmpl *template.Template, data any) (string, error) {
 	return sb.String(), nil
 }
 
-var ErrNoSuchService = errors.New("no such service")
 var ErrNotStarted = errors.New("not started")
 
 func getPidsOfServices(services []string) ([]int, error) {
@@ -324,7 +425,7 @@ func getPidsOfService(service string) ([]int, error) {
 				return nil, err2
 			}
 			if !exists {
-				return nil, ErrNoSuchService
+				return nil, fmt.Errorf("no such service: %s", service)
 			}
 			return nil, ErrNotStarted
 		}
