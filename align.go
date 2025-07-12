@@ -1,4 +1,4 @@
-package align
+package main
 
 import (
 	"errors"
@@ -8,8 +8,8 @@ import (
 type Align int
 
 const (
-	Left Align = iota
-	Right
+	AlignLeft Align = iota
+	AlignRight
 )
 
 func AlignColumns(rows [][]string, alignments []Align) ([][]string, error) {
@@ -26,9 +26,9 @@ func AlignColumns(rows [][]string, alignments []Align) ([][]string, error) {
 		for j, col := range row {
 			var format string
 			switch alignments[j] {
-			case Left:
+			case AlignLeft:
 				format = "%-*s"
-			case Right:
+			case AlignRight:
 				format = "%*s"
 			}
 			alignedRows[i][j] = fmt.Sprintf(format, widths[j], col)

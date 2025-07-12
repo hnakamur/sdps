@@ -18,7 +18,6 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/dustin/go-humanize"
-	"github.com/hnakamur/sdps/internal/align"
 )
 
 const description = `"sdps" is an alternative "ps" command specifically designed for processes within systemd services.
@@ -146,7 +145,7 @@ func (c *CLI) Run(ctx context.Context) error {
 		alignedRows = unalignedRows
 	} else {
 		alignments := convertColumnsToAlign(columns)
-		alignedRows, err = align.AlignColumns(unalignedRows, alignments)
+		alignedRows, err = AlignColumns(unalignedRows, alignments)
 		if err != nil {
 			return err
 		}
@@ -170,7 +169,7 @@ func filterProcessRawRecordsWithCmdline(records []ProcessRawRecord, filter strin
 
 type Column struct {
 	Field    string
-	Align    align.Align
+	Align    Align
 	Template *template.Template
 }
 
@@ -194,9 +193,9 @@ func buildColumns(fields []string, funcCalls, alignments map[string]string, defa
 		}
 		switch a {
 		case alignLeft:
-			columns[i].Align = align.Left
+			columns[i].Align = AlignLeft
 		case alignRight:
-			columns[i].Align = align.Right
+			columns[i].Align = AlignRight
 		default:
 			return nil, fmt.Errorf("invalid align: %s, must be %s or %s", a, alignLeft, alignRight)
 		}
@@ -225,8 +224,8 @@ func convertColumnsToHeader(columns []Column) []string {
 	return row
 }
 
-func convertColumnsToAlign(columns []Column) []align.Align {
-	config := make([]align.Align, len(columns))
+func convertColumnsToAlign(columns []Column) []Align {
+	config := make([]Align, len(columns))
 	for i, column := range columns {
 		config[i] = column.Align
 	}
