@@ -55,4 +55,4 @@ changelog:
 release:
   github:
     owner: hnakamur
-    repo: sdps
+    name: sdps
