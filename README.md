@@ -63,10 +63,20 @@ output
       --[no-]header          Control whether to show the header row.
 ```
 
-## For Developer: How to build sdps as "not a dynamic executable"
+## For Developer
+
+### How to build sdps as "not a dynamic executable"
 
 Install [Go](https://go.dev/) and run the following command:
 
 ```
 go build -trimpath -tags osusergo
+```
+
+## How to install sdps from source as "not a dynamic executable"
+
+Install [Go](https://go.dev/) and run the following command:
+
+```
+go install -trimpath -tags osusergo github.com/hnakamur/sdps@latest
 ```
