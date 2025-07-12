@@ -1,4 +1,4 @@
-module github.com/hnakamur/myps
+module github.com/hnakamur/sdps
 
 go 1.24.5
 

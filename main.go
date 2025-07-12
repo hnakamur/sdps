@@ -18,10 +18,12 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/dustin/go-humanize"
-	"github.com/hnakamur/myps/internal/align"
+	"github.com/hnakamur/sdps/internal/align"
 )
 
-const description = `"myps" is an alternative "ps" command specifically designed for processes within systemd services.
+const description = `"sdps" is an alternative "ps" command specifically designed for processes within systemd services.
+
+Its name is an abbreviation of "systemd ps".
 
 It's not a full replacement for "ps", but rather focuses on a core subset of functionality to serve two use cases:
 
@@ -45,32 +47,32 @@ It's not a full replacement for "ps", but rather focuses on a core subset of fun
 var cliVars = kong.Vars{
 	"column_default": `pid,ppid,vsz,rss,start,uptime,command`,
 	"column_help": `Columns to display in the output. Available columns: ` +
-		`"pid", "ppid", "vsz", "rss", "start", "uptime", and "command"`,
+		`"pid", "ppid", "vsz", "rss", "start", "uptime", and "command".`,
 	"format_default": `vsz=iBytes;rss=iBytes;start=format "2006-01-02 15:04";uptime=duration`,
-	"format_help": `Functions for formatting a column value in Go's text/template syntax after "|". ` +
+	"format_help": `Specify formatting functions for column values. Uses Go's text/template syntax after "|". ` +
 		`Available functions: "iBytes" for "vsz" and "rss", "format" or "humanRelTime" for "start", ` +
 		`"duration" or "seconds" for "uptime". ` +
 		`Note for units in the output of "duration": "y" is 365.25 days, "M" is 30.4375 days, "d" is 24 hours. ` +
-		`For "format" layout details, see https://pkg.go.dev/time@latest#Layout`,
+		`For "format" layout details, see https://pkg.go.dev/time@latest#Layout.`,
 	"align_help":         `Override default column alignments.`,
 	"default_align_help": `Set the default alignment for all columns.`,
 	"agg_help": `Aggregate a single field value from processes. Currently, only ` +
-		`"--field=uptime --agg=min" is supported`,
+		`"--field=uptime --agg=min" is supported.`,
 }
 
 var cli CLI
 
 type CLI struct {
-	Service []string `group:"process" short:"s" help:"systemd service name"`
-	Filter  string   `group:"process" short:"l" help:"filter for command line of process"`
+	Service []string `group:"process" short:"s" required:"" help:"Specify systemd service name(s)."`
+	Filter  string   `group:"process" short:"l" help:"Filter processes by their command line."`
 
 	Column       []string          `group:"output" short:"c" default:"${column_default}" env:"MYPS_COLUMN" help:"${column_help}"`
 	Format       map[string]string `group:"output" short:"f" default:"${format_default}" env:"MYPS_FORMAT" help:"${format_help}"`
 	DefaultAlign string            `group:"output" short:"d" default:"R" env:"MYPS_DEFAULT_ALIGN" help:"${default_align_help}"`
 	Align        map[string]string `group:"output" short:"a" default:"command=L" env:"MYPS_ALIGN" help:"${align_help}"`
 	Agg          string            `group:"output" short:"g" help:"${agg_help}"`
-	Header       bool              `group:"output" default:"true" negatable:"" help:"Control whether to show the header row"`
-	Version      bool              `help:"Show version and exit"`
+	Header       bool              `group:"output" default:"true" negatable:"" help:"Control whether to show the header row."`
+	Version      bool              `help:"Show version and exit."`
 }
 
 const (
@@ -716,7 +718,7 @@ func getBootTime() (time.Time, error) {
 
 func main() {
 	ctx := kong.Parse(&cli,
-		kong.Name("myps"),
+		kong.Name("sdps"),
 		kong.Description(description),
 		kong.UsageOnError(),
 		cliVars)
