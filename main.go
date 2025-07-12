@@ -20,7 +20,8 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-const description = `"sdps" is an alternative "ps" command specifically designed for processes within systemd services.
+const cliName = `sdps`
+const description = `"` + cliName + `" is an alternative "ps" command specifically designed for processes within systemd services.
 
 Its name is an abbreviation of "systemd ps".
 
@@ -30,17 +31,17 @@ It's not a full replacement for "ps", but rather focuses on a core subset of fun
 
   View process details in a format easy for humans to read.
 
-  # myps -s nginx,trafficserver
+  # ` + cliName + ` -s nginx,trafficserver
 
-  # myps -s nginx,trafficserver -c pid,vsz,rss,start,command -f start=humanRelTime
+  # ` + cliName + ` -s nginx,trafficserver -c pid,vsz,rss,start,command -f start=humanRelTime
 
 * Outputting Single Values for Monitoring/Scripting:
 
   Extract a single process value, ideal for integration with monitoring software or for use in scripts.
 
-  # myps -s nginx -l 'nginx: worker' -c uptime -f uptime=seconds -g min --no-header
+  # ` + cliName + ` -s nginx -l 'nginx: worker' -c uptime -f uptime=seconds -g min --no-header
 
-  # myps -s nginx -l 'nginx: master' -c pid --no-header
+  # ` + cliName + ` -s nginx -l 'nginx: master' -c pid --no-header
 `
 
 var cliVars = kong.Vars{
@@ -717,7 +718,7 @@ func getBootTime() (time.Time, error) {
 
 func main() {
 	ctx := kong.Parse(&cli,
-		kong.Name("sdps"),
+		kong.Name(cliName),
 		kong.Description(description),
 		kong.UsageOnError(),
 		cliVars)
