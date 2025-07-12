@@ -21,39 +21,66 @@ import (
 	"github.com/hnakamur/myps/internal/align"
 )
 
-const (
-	// CLK_TCK is a constant on Linux for all architectures except alpha and ia64.
-	// See e.g.
-	// https://git.musl-libc.org/cgit/musl/tree/src/conf/sysconf.c#n30
-	// https://github.com/containerd/cgroups/pull/12
-	// https://lore.kernel.org/lkml/agtlq6$iht$1@penguin.transmeta.com/
-	//
-	// copied from https://github.com/tklauser/go-sysconf/blob/v0.3.15/sysconf_linux.go#L18-L25
-	_SYSTEM_CLK_TCK = 100
-)
+const description = `"myps" is an alternative "ps" command specifically designed for processes within systemd services.
+
+It's not a full replacement for "ps", but rather focuses on a core subset of functionality to serve two use cases:
+
+* Displaying Human-Readable Process Information.
+
+  View process details in a format easy for humans to read.
+
+  # myps -s nginx,trafficserver
+
+  # myps -s nginx,trafficserver -c pid,vsz,rss,start,command -f start=humanRelTime
+
+* Outputting Single Values for Monitoring/Scripting:
+
+  Extract a single process value, ideal for integration with monitoring software or for use in scripts.
+
+  # myps -s nginx -l 'nginx: worker' -c uptime -f uptime=seconds -g min --no-header
+
+  # myps -s nginx -l 'nginx: master' -c pid --no-header
+`
+
+var cliVars = kong.Vars{
+	"column_default": `pid,ppid,vsz,rss,start,uptime,command`,
+	"column_help": `Columns to display in the output. Available columns: ` +
+		`"pid", "ppid", "vsz", "rss", "start", "uptime", and "command"`,
+	"format_default": `vsz=iBytes;rss=iBytes;start=format "2006-01-02 15:04";uptime=duration`,
+	"format_help": `Functions for formatting a column value in Go's text/template syntax after "|". ` +
+		`Available functions: "iBytes" for "vsz" and "rss", "format" or "humanRelTime" for "start", ` +
+		`"duration" or "seconds" for "uptime". ` +
+		`Note for units in the output of "duration": "y" is 365.25 days, "M" is 30.4375 days, "d" is 24 hours. ` +
+		`For "format" layout details, see https://pkg.go.dev/time@latest#Layout`,
+	"align_help":         `Override default column alignments.`,
+	"default_align_help": `Set the default alignment for all columns.`,
+	"agg_help": `Aggregate a single field value from processes. Currently, only ` +
+		`"--field=uptime --agg=min" is supported`,
+}
 
 var cli CLI
 
 type CLI struct {
-	Service      []string          `group:"process" short:"s" help:"systemd service name"`
-	Filter       string            `group:"process" help:"filter for command line of process"`
-	Header       bool              `group:"output" default:"true" negatable:"" help:"show header"`
-	Field        []string          `group:"output" default:"PID,PPID,VSZ,RSS,START,UPTIME,COMMAND" help:"fields to print in output"`
-	Func         map[string]string `group:"output" default:"VSZ=iBytes;RSS=iBytes;START=format \"2006-01-02 15:04\";UPTIME=duration" help:"post-presssing pipe for values in Go's text/template syntax after \"|\""`
-	DefaultAlign string            `group:"output" default:"R" help:"default alignment for fields"`
-	Align        map[string]string `group:"output" default:"COMMAND=L" help:"overriding alignments for fields"`
-	Agg          string            `group:"output" help:"aggregate single field value of processes, ex: --field=UPTIME --agg=min"`
-	Version      bool              `help:"show version and exit"`
+	Service []string `group:"process" short:"s" help:"systemd service name"`
+	Filter  string   `group:"process" short:"l" help:"filter for command line of process"`
+
+	Column       []string          `group:"output" short:"c" default:"${column_default}" env:"MYPS_COLUMN" help:"${column_help}"`
+	Format       map[string]string `group:"output" short:"f" default:"${format_default}" env:"MYPS_FORMAT" help:"${format_help}"`
+	DefaultAlign string            `group:"output" short:"d" default:"R" env:"MYPS_DEFAULT_ALIGN" help:"${default_align_help}"`
+	Align        map[string]string `group:"output" short:"a" default:"command=L" env:"MYPS_ALIGN" help:"${align_help}"`
+	Agg          string            `group:"output" short:"g" help:"${agg_help}"`
+	Header       bool              `group:"output" default:"true" negatable:"" help:"Control whether to show the header row"`
+	Version      bool              `help:"Show version and exit"`
 }
 
 const (
-	fieldPID     = "PID"
-	fieldPPID    = "PPID"
-	fieldVSZ     = "VSZ"
-	fieldRSS     = "RSS"
-	fieldStart   = "START"
-	fieldUptime  = "UPTIME"
-	fieldCommand = "COMMAND"
+	fieldPID     = "pid"
+	fieldPPID    = "ppid"
+	fieldVSZ     = "vsz"
+	fieldRSS     = "rss"
+	fieldStart   = "start"
+	fieldUptime  = "uptime"
+	fieldCommand = "command"
 )
 
 const (
@@ -71,7 +98,7 @@ func (c *CLI) Run(ctx context.Context) error {
 		return nil
 	}
 
-	columns, err := buildColumns(c.Field, c.Func, c.Align, c.DefaultAlign)
+	columns, err := buildColumns(c.Column, c.Format, c.Align, c.DefaultAlign)
 	if err != nil {
 		return err
 	}
@@ -191,7 +218,7 @@ func buildColumns(fields []string, funcCalls, alignments map[string]string, defa
 func convertColumnsToHeader(columns []Column) []string {
 	row := make([]string, len(columns))
 	for i, column := range columns {
-		row[i] = column.Field
+		row[i] = strings.ToUpper(column.Field)
 	}
 	return row
 }
@@ -250,7 +277,7 @@ func formatDuration(d time.Duration) string {
 		rest := d % Month
 		day := rest / Day
 		rest = rest % Day
-		return fmt.Sprintf("%dm%dd%s", month, day, rest)
+		return fmt.Sprintf("%dM%dd%s", month, day, rest)
 	}
 
 	year := d / Year
@@ -259,7 +286,7 @@ func formatDuration(d time.Duration) string {
 	rest = rest % Month
 	day := rest / Day
 	rest = rest % Day
-	return fmt.Sprintf("%dy%dm%dd%s", year, month, day, rest)
+	return fmt.Sprintf("%dy%dM%dd%s", year, month, day, rest)
 }
 
 func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawRecord, agg string) ([][]string, error) {
@@ -532,6 +559,17 @@ func (t StartTime) String() string {
 	return string(t.raw)
 }
 
+const (
+	// CLK_TCK is a constant on Linux for all architectures except alpha and ia64.
+	// See e.g.
+	// https://git.musl-libc.org/cgit/musl/tree/src/conf/sysconf.c#n30
+	// https://github.com/containerd/cgroups/pull/12
+	// https://lore.kernel.org/lkml/agtlq6$iht$1@penguin.transmeta.com/
+	//
+	// copied from https://github.com/tklauser/go-sysconf/blob/v0.3.15/sysconf_linux.go#L18-L25
+	_SYSTEM_CLK_TCK = 100
+)
+
 func (t StartTime) AsTime(bootTime time.Time) (time.Time, error) {
 	startTimeInClocks, err := strconv.ParseInt(t.String(), 10, 64)
 	if err != nil {
@@ -677,7 +715,11 @@ func getBootTime() (time.Time, error) {
 }
 
 func main() {
-	ctx := kong.Parse(&cli)
+	ctx := kong.Parse(&cli,
+		kong.Name("myps"),
+		kong.Description(description),
+		kong.UsageOnError(),
+		cliVars)
 	// kong.BindTo is needed to bind a context.Context value.
 	// See https://github.com/alecthomas/kong/issues/48
 	ctx.BindTo(context.Background(), (*context.Context)(nil))
