@@ -65,7 +65,7 @@ var cliVars = kong.Vars{
 var cli CLI
 
 type CLI struct {
-	Service []string `group:"process" short:"s" required:"" help:"Specify systemd service name(s)."`
+	Service []string `group:"process" short:"s" required:"" xor:"entry" help:"Specify systemd service name(s)."`
 	Filter  string   `group:"process" short:"l" help:"Filter processes by their command line."`
 
 	Column       []string          `group:"output" short:"c" default:"${column_default}" env:"MYPS_COLUMN" help:"${column_help}"`
@@ -74,7 +74,7 @@ type CLI struct {
 	Align        map[string]string `group:"output" short:"a" default:"command=L" env:"MYPS_ALIGN" help:"${align_help}"`
 	Agg          string            `group:"output" short:"g" help:"${agg_help}"`
 	Header       bool              `group:"output" default:"true" negatable:"" help:"Control whether to show the header row."`
-	Version      bool              `help:"Show version and exit."`
+	Version      bool              `required:"" xor:"entry" help:"Show version and exit."`
 }
 
 const (
