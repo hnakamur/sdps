@@ -42,6 +42,8 @@ It's not a full replacement for "ps", but rather focuses on a core subset of fun
   # ` + cliName + ` -s nginx -l 'nginx: worker' -c uptime -f uptime=seconds -g min --no-header
 
   # ` + cliName + ` -s nginx -l 'nginx: master' -c pid --no-header
+
+"` + cliName + `" works solely on Linux systems running systemd.
 `
 
 var cliVars = kong.Vars{
@@ -52,7 +54,7 @@ var cliVars = kong.Vars{
 	"format_help": `Specify formatting functions for column values. Uses Go's text/template syntax after "|". ` +
 		`Available functions: "iBytes" for "vsz" and "rss", "format" or "humanRelTime" for "start", ` +
 		`"duration" or "seconds" for "uptime". ` +
-		`Note for units in the output of "duration": "y" is 365.25 days, "M" is 30.4375 days, "d" is 24 hours. ` +
+		`For "duration" units: "y" = 365.25 days, "M" = 30.4375 days, "d" = 24 hours. ` +
 		`For "format" layout details, see https://pkg.go.dev/time@latest#Layout.`,
 	"align_help":         `Override default column alignments.`,
 	"default_align_help": `Set the default alignment for all columns.`,
