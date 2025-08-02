@@ -114,7 +114,9 @@ func (c *CLI) Run(ctx context.Context) error {
 		return nil
 	}
 
-	columns, err := buildColumns(c.Column, c.Format, c.Align, c.DefaultAlign)
+	sysValCache := NewSysValueCache()
+
+	columns, err := buildColumns(sysValCache, c.Column, c.Format, c.Align, c.DefaultAlign)
 	if err != nil {
 		return err
 	}
@@ -141,7 +143,7 @@ func (c *CLI) Run(ctx context.Context) error {
 		records = filterProcessRawRecordsWithCmdline(records, c.Filter)
 	}
 
-	rows, err := convertProcessRawRecordsToTableRows(columns, records, c.Agg)
+	rows, err := convertProcessRawRecordsToTableRows(sysValCache, columns, records, c.Agg)
 	if err != nil {
 		return err
 	}
@@ -188,7 +190,29 @@ type Column struct {
 	Template *template.Template
 }
 
-func buildColumns(fields []string, funcCalls, alignments map[string]string, defaultAlign string) ([]Column, error) {
+func buildColumns(sysValCache *SysValueCache, fields []string, funcCalls, alignments map[string]string, defaultAlign string) ([]Column, error) {
+	templateFuncMap := template.FuncMap{
+		"iBytes":   iBytes,
+		"format":   formatTime,
+		"seconds":  seconds,
+		"duration": formatDuration,
+	}
+
+	if funcCalls[fieldStart] == "humanRelTime" {
+		bootTime, err := sysValCache.GetBootTime()
+		if err != nil {
+			return nil, err
+		}
+		sysUptime, err := sysValCache.GetSystemUptime()
+		if err != nil {
+			return nil, err
+		}
+		now := bootTime.Add(sysUptime)
+		templateFuncMap["humanRelTime"] = func(then time.Time) string {
+			return humanize.RelTime(then, now, "ago", "from now")
+		}
+	}
+
 	columns := make([]Column, len(fields))
 	for i, field := range fields {
 		switch field {
@@ -223,8 +247,7 @@ func buildColumns(fields []string, funcCalls, alignments map[string]string, defa
 		}
 		tmpl, err := template.New("").Funcs(templateFuncMap).Parse(tmplText)
 		if err != nil {
-			return nil,
-				fmt.Errorf("cannot parse template: %s, err=%s", tmplText, err)
+			return nil, fmt.Errorf("cannot parse template: %s, err=%s", tmplText, err)
 		}
 		columns[i].Template = tmpl
 	}
@@ -247,14 +270,6 @@ func convertColumnsToAlign(columns []Column) []Align {
 	return config
 }
 
-var templateFuncMap = template.FuncMap{
-	"iBytes":       iBytes,
-	"format":       formatTime,
-	"humanRelTime": humanize.Time,
-	"seconds":      seconds,
-	"duration":     formatDuration,
-}
-
 func iBytes(b uint64) string {
 	return humanize.IBytes(b)
 }
@@ -267,45 +282,45 @@ func seconds(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Second), 10)
 }
 
-const (
-	Year  = time.Duration(365.25 * float64(Day))
-	Month = Year / 12
-	Day   = 24 * time.Hour
-)
-
 func formatDuration(d time.Duration) string {
+	const (
+		dayDuration   = 24 * time.Hour
+		yearDuration  = time.Duration(365.25 * float64(dayDuration))
+		monthDuration = yearDuration / 12
+	)
+
 	if d < 0 {
 		return "-" + formatDuration(-d)
 	}
 
-	if d < Day {
+	if d < dayDuration {
 		return d.String()
 	}
 
-	if d < Month {
-		day := d / Day
-		rest := d % Day
+	if d < monthDuration {
+		day := d / dayDuration
+		rest := d % dayDuration
 		return fmt.Sprintf("%dd%s", day, rest)
 	}
 
-	if d < Year {
-		month := d / Month
-		rest := d % Month
-		day := rest / Day
-		rest = rest % Day
+	if d < yearDuration {
+		month := d / monthDuration
+		rest := d % monthDuration
+		day := rest / dayDuration
+		rest = rest % dayDuration
 		return fmt.Sprintf("%dM%dd%s", month, day, rest)
 	}
 
-	year := d / Year
-	rest := d % Year
-	month := rest / Month
-	rest = rest % Month
-	day := rest / Day
-	rest = rest % Day
+	year := d / yearDuration
+	rest := d % yearDuration
+	month := rest / monthDuration
+	rest = rest % monthDuration
+	day := rest / dayDuration
+	rest = rest % dayDuration
 	return fmt.Sprintf("%dy%dM%dd%s", year, month, day, rest)
 }
 
-func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawRecord, agg string) ([][]string, error) {
+func convertProcessRawRecordsToTableRows(sysValCache *SysValueCache, columns []Column, records []ProcessRawRecord, agg string) ([][]string, error) {
 	hasPID := false
 	hasPPID := false
 	hasPCPU := false
@@ -338,7 +353,7 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 	var err error
 	var pageSize int
 	if hasRSS {
-		pageSize, err = getPageSize()
+		pageSize, err = sysValCache.GetPageSize()
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +361,7 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 
 	var bootTime time.Time
 	if hasStart || hasUptime || hasPCPU {
-		bootTime, err = getBootTime()
+		bootTime, err = sysValCache.GetBootTime()
 		if err != nil {
 			return nil, err
 		}
@@ -354,7 +369,7 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 
 	var sysUptime time.Duration
 	if hasUptime || hasPCPU {
-		sysUptime, err = getSystemUptime()
+		sysUptime, err = sysValCache.GetSystemUptime()
 		if err != nil {
 			return nil, err
 		}
@@ -750,66 +765,6 @@ func readProdPidCmdline(pid int) (Cmdline, error) {
 		return Cmdline{}, fmt.Errorf("cannot read %s: %s", filename, err)
 	}
 	return Cmdline{raw: content}, nil
-}
-
-func getPageSize() (int, error) {
-	cmd := exec.Command("getconf", "PAGESIZE")
-	outputBytes, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(string(bytes.TrimSuffix(outputBytes, []byte{'\n'})))
-}
-
-func getBootTime() (time.Time, error) {
-	const filename = "/proc/stat"
-	// btime 769041601
-	//        boot time, in seconds since the Epoch, 1970-01-01
-	//        00:00:00 +0000 (UTC).
-	// https://man7.org/linux/man-pages/man5/proc_stat.5.html
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("cannot read %s: %s", filename, err)
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	const btimePrefix = "btime "
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, btimePrefix) {
-			btime, err := strconv.ParseInt(line[len(btimePrefix):], 10, 64)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("convert btime to int %s: %s", line, err)
-			}
-			return time.Unix(btime, 0), nil
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return time.Time{}, err
-	}
-	return time.Time{}, fmt.Errorf("btime not found in %s", filename)
-}
-
-func getSystemUptime() (time.Duration, error) {
-	const filename = "/proc/uptime"
-	// This file contains two numbers (values in seconds): the
-	// uptime of the system (including time spent in suspend) and
-	// the amount of time spent in the idle process.
-	// https://man7.org/linux/man-pages/man5/proc_uptime.5.html
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return 0, fmt.Errorf("cannot read %s: %s", filename, err)
-	}
-	uptimeSecsBytes, _, found := bytes.Cut(content, []byte{' '})
-	if !found {
-		return 0, fmt.Errorf("unexpected formatted content in %s: content=%s",
-			filename, string(content))
-	}
-	uptimeSecs, err := strconv.ParseFloat(string(uptimeSecsBytes), 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid uptime value in %s: content=%s",
-			filename, string(content))
-	}
-	return time.Duration(uptimeSecs * float64(time.Second)), nil
 }
 
 func main() {
