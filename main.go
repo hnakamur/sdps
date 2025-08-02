@@ -47,9 +47,9 @@ It's not a full replacement for "ps", but rather focuses on a core subset of fun
 `
 
 var cliVars = kong.Vars{
-	"column_default": `pid,ppid,vsz,rss,start,uptime,command`,
+	"column_default": `pid,ppid,pcpu,vsz,rss,start,uptime,command`,
 	"column_help": `Columns to display in the output. Available columns: ` +
-		`"pid", "ppid", "vsz", "rss", "start", "uptime", and "command".`,
+		`"pid", "ppid", "pcpu", "vsz", "rss", "start", "uptime", and "command".`,
 	"format_default": `vsz=iBytes;rss=iBytes;start=format "2006-01-02 15:04";uptime=duration`,
 	"format_help": `Specify formatting functions for column values. Uses Go's text/template syntax after "|". ` +
 		`Available functions: "iBytes" for "vsz" and "rss", "format" or "humanRelTime" for "start", ` +
@@ -78,16 +78,6 @@ type CLI struct {
 }
 
 const (
-	fieldPID     = "pid"
-	fieldPPID    = "ppid"
-	fieldVSZ     = "vsz"
-	fieldRSS     = "rss"
-	fieldStart   = "start"
-	fieldUptime  = "uptime"
-	fieldCommand = "command"
-)
-
-const (
 	alignLeft  = "L"
 	alignRight = "R"
 )
@@ -95,6 +85,28 @@ const (
 const (
 	aggMin = "min"
 )
+
+const (
+	fieldPID     = "pid"
+	fieldPPID    = "ppid"
+	fieldPCPU    = "pcpu"
+	fieldVSZ     = "vsz"
+	fieldRSS     = "rss"
+	fieldStart   = "start"
+	fieldUptime  = "uptime"
+	fieldCommand = "command"
+)
+
+var fieldTitles = map[string]string{
+	fieldPID:     "PID",
+	fieldPPID:    "PPID",
+	fieldPCPU:    "%CPU",
+	fieldVSZ:     "VSZ",
+	fieldRSS:     "RSS",
+	fieldStart:   "START",
+	fieldUptime:  "UPTIME",
+	fieldCommand: "COMMAND",
+}
 
 func (c *CLI) Run(ctx context.Context) error {
 	if c.Version {
@@ -180,7 +192,7 @@ func buildColumns(fields []string, funcCalls, alignments map[string]string, defa
 	columns := make([]Column, len(fields))
 	for i, field := range fields {
 		switch field {
-		case fieldPID, fieldPPID, fieldVSZ, fieldRSS, fieldStart,
+		case fieldPID, fieldPPID, fieldPCPU, fieldVSZ, fieldRSS, fieldStart,
 			fieldUptime, fieldCommand:
 
 			columns[i].Field = field
@@ -222,7 +234,7 @@ func buildColumns(fields []string, funcCalls, alignments map[string]string, defa
 func convertColumnsToHeader(columns []Column) []string {
 	row := make([]string, len(columns))
 	for i, column := range columns {
-		row[i] = strings.ToUpper(column.Field)
+		row[i] = fieldTitles[column.Field]
 	}
 	return row
 }
@@ -296,6 +308,7 @@ func formatDuration(d time.Duration) string {
 func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawRecord, agg string) ([][]string, error) {
 	hasPID := false
 	hasPPID := false
+	hasPCPU := false
 	hasVSZ := false
 	hasRSS := false
 	hasStart := false
@@ -307,6 +320,8 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 			hasPID = true
 		case fieldPPID:
 			hasPPID = true
+		case fieldPCPU:
+			hasPCPU = true
 		case fieldVSZ:
 			hasVSZ = true
 		case fieldRSS:
@@ -330,16 +345,19 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 	}
 
 	var bootTime time.Time
-	if hasStart || hasUptime {
+	if hasStart || hasUptime || hasPCPU {
 		bootTime, err = getBootTime()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var now time.Time
-	if hasUptime {
-		now = time.Now()
+	var sysUptime time.Duration
+	if hasUptime || hasPCPU {
+		sysUptime, err = getSystemUptime()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	dataList := make([]map[string]any, len(records))
@@ -367,17 +385,27 @@ func convertProcessRawRecordsToTableRows(columns []Column, records []ProcessRawR
 			rssInBytes := rssPageCount * uint64(pageSize)
 			data[fieldRSS] = rssInBytes
 		}
-		if hasStart || hasUptime {
-			start, err := record.StartTime.AsTime(bootTime)
+		if hasStart || hasUptime || hasPCPU {
+			startDur, err := record.StartTime.AsDuration()
 			if err != nil {
 				return nil, err
 			}
 
 			if hasStart {
-				data[fieldStart] = start
+				data[fieldStart] = bootTime.Add(startDur)
 			}
-			if hasUptime {
-				data[fieldUptime] = now.Sub(start).Truncate(time.Second)
+			if hasUptime || hasPCPU {
+				procUptime := sysUptime - startDur
+				if hasUptime {
+					data[fieldUptime] = procUptime.Truncate(time.Second)
+				}
+				if hasPCPU {
+					pcpu, err := record.percentCPU(procUptime)
+					if err != nil {
+						return nil, err
+					}
+					data[fieldPCPU] = fmt.Sprintf("%.1f", pcpu)
+				}
 			}
 		}
 		if hasCommand {
@@ -500,10 +528,25 @@ func checkServiceExists(service string) (bool, error) {
 type ProcessRawRecord struct {
 	Pid       int
 	PPid      PPid
-	StartTime StartTime
+	UTime     ClockTicks
+	STime     ClockTicks
+	StartTime ClockTicks
 	VSize     VSize
 	RSS       RSS
 	Command   Cmdline
+}
+
+func (r *ProcessRawRecord) percentCPU(procUptime time.Duration) (float64, error) {
+	uTimeTicks, err := r.UTime.AsTicks()
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert utime to integer: %s", err)
+	}
+	sTimeTicks, err := r.STime.AsTicks()
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert stime to integer: %s", err)
+	}
+	uptimeTicks := procUptime / (time.Second / _SYSTEM_CLK_TCK)
+	return float64(uTimeTicks+sTimeTicks) / float64(uptimeTicks) * 100, nil
 }
 
 func readProcPidStatMulti(pids []int) ([]ProcessRawRecord, error) {
@@ -555,15 +598,29 @@ func (p PPid) String() string {
 	return string(p.raw)
 }
 
-type StartTime struct {
+type ClockTicks struct {
 	raw []byte
 }
 
-func (t StartTime) String() string {
+func (t ClockTicks) AsTicks() (uint64, error) {
+	return strconv.ParseUint(string(t.raw), 10, 64)
+}
+
+func (t ClockTicks) AsDuration() (time.Duration, error) {
+	ticks, err := strconv.ParseUint(string(t.raw), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(ticks) * (time.Second / _SYSTEM_CLK_TCK), nil
+}
+
+func (t ClockTicks) String() string {
 	return string(t.raw)
 }
 
 const (
+	// CLK_TCK is the number of clock ticks per second.
+	//
 	// CLK_TCK is a constant on Linux for all architectures except alpha and ia64.
 	// See e.g.
 	// https://git.musl-libc.org/cgit/musl/tree/src/conf/sysconf.c#n30
@@ -573,14 +630,6 @@ const (
 	// copied from https://github.com/tklauser/go-sysconf/blob/v0.3.15/sysconf_linux.go#L18-L25
 	_SYSTEM_CLK_TCK = 100
 )
-
-func (t StartTime) AsTime(bootTime time.Time) (time.Time, error) {
-	startTimeInClocks, err := strconv.ParseInt(t.String(), 10, 64)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return bootTime.Add(time.Duration(startTimeInClocks/_SYSTEM_CLK_TCK) * time.Second), nil
-}
 
 type VSize struct {
 	raw []byte
@@ -617,6 +666,22 @@ func readProcPidStat(pid int) (ProcessRawRecord, error) {
 	//
 	//  ...(snip)...
 	//
+	//  (14) utime  %lu
+	//         Amount of time that this process has been scheduled
+	//         in user mode, measured in clock ticks (divide by
+	//         sysconf(_SC_CLK_TCK)).  This includes guest time,
+	//         guest_time (time spent running a virtual CPU, see
+	//         below), so that applications that are not aware of
+	//         the guest time field do not lose that time from
+	//         their calculations.
+	//
+	//  (15) stime  %lu
+	//         Amount of time that this process has been scheduled
+	//         in kernel mode, measured in clock ticks (divide by
+	//         sysconf(_SC_CLK_TCK)).
+	//
+	//  ...(snip)...
+	//
 	//  (22) starttime  %llu
 	//         The time the process started after system boot.
 	//         Before Linux 2.6, this value was expressed in
@@ -641,6 +706,8 @@ func readProcPidStat(pid int) (ProcessRawRecord, error) {
 		return ProcessRawRecord{}, fmt.Errorf("cannot read %s: %s", filename, err)
 	}
 	const ppidIdx = 4
+	const utimeIdx = 14
+	const stimeIdx = 15
 	const startTimeIdx = 22
 	const vsizeIdx = 23
 	const rssIdx = 24
@@ -650,8 +717,12 @@ func readProcPidStat(pid int) (ProcessRawRecord, error) {
 		switch i {
 		case ppidIdx:
 			record.PPid = PPid{raw: word}
+		case utimeIdx:
+			record.UTime = ClockTicks{raw: word}
+		case stimeIdx:
+			record.STime = ClockTicks{raw: word}
 		case startTimeIdx:
-			record.StartTime = StartTime{raw: word}
+			record.StartTime = ClockTicks{raw: word}
 		case vsizeIdx:
 			record.VSize = VSize{raw: word}
 		case rssIdx:
@@ -716,6 +787,29 @@ func getBootTime() (time.Time, error) {
 		return time.Time{}, err
 	}
 	return time.Time{}, fmt.Errorf("btime not found in %s", filename)
+}
+
+func getSystemUptime() (time.Duration, error) {
+	const filename = "/proc/uptime"
+	// This file contains two numbers (values in seconds): the
+	// uptime of the system (including time spent in suspend) and
+	// the amount of time spent in the idle process.
+	// https://man7.org/linux/man-pages/man5/proc_uptime.5.html
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return 0, fmt.Errorf("cannot read %s: %s", filename, err)
+	}
+	uptimeSecsBytes, _, found := bytes.Cut(content, []byte{' '})
+	if !found {
+		return 0, fmt.Errorf("unexpected formatted content in %s: content=%s",
+			filename, string(content))
+	}
+	uptimeSecs, err := strconv.ParseFloat(string(uptimeSecsBytes), 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid uptime value in %s: content=%s",
+			filename, string(content))
+	}
+	return time.Duration(uptimeSecs * float64(time.Second)), nil
 }
 
 func main() {
