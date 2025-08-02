@@ -56,10 +56,10 @@ var cliVars = kong.Vars{
 		`"duration" or "seconds" for "uptime". ` +
 		`For "duration" units: "y" = 365.25 days, "M" = 30.4375 days, "d" = 24 hours. ` +
 		`For "format" layout details, see https://pkg.go.dev/time@latest#Layout.`,
-	"align_help":         `Override default column alignments.`,
-	"default_align_help": `Set the default alignment for all columns.`,
-	"agg_help": `Aggregate a single field value from processes. Currently, only ` +
-		`"--field=uptime --agg=min" is supported.`,
+	"align_help":         `Override default column alignments. L (Left) or R (right).`,
+	"default_align_help": `Set the default alignment for all columns. L (Left) or R (right).`,
+	"agg_help": `Aggregate a single column value from processes. Currently, only ` +
+		`"--column=uptime --agg=min" is supported.`,
 }
 
 var cli CLI
@@ -68,10 +68,10 @@ type CLI struct {
 	Service []string `group:"process" short:"s" required:"" xor:"entry" help:"Specify systemd service name(s)."`
 	Filter  string   `group:"process" short:"l" help:"Filter processes by their command line."`
 
-	Column       []string          `group:"output" short:"c" default:"${column_default}" env:"MYPS_COLUMN" help:"${column_help}"`
-	Format       map[string]string `group:"output" short:"f" default:"${format_default}" env:"MYPS_FORMAT" help:"${format_help}"`
-	DefaultAlign string            `group:"output" short:"d" default:"R" env:"MYPS_DEFAULT_ALIGN" help:"${default_align_help}"`
-	Align        map[string]string `group:"output" short:"a" default:"command=L" env:"MYPS_ALIGN" help:"${align_help}"`
+	Column       []string          `group:"output" short:"c" default:"${column_default}" env:"SDPS_COLUMN" help:"${column_help}"`
+	Format       map[string]string `group:"output" short:"f" default:"${format_default}" env:"SDPS_FORMAT" help:"${format_help}"`
+	DefaultAlign string            `group:"output" short:"d" default:"R" env:"SDPS_DEFAULT_ALIGN" help:"${default_align_help}"`
+	Align        map[string]string `group:"output" short:"a" default:"command=L" env:"SDPS_ALIGN" help:"${align_help}"`
 	Agg          string            `group:"output" short:"g" help:"${agg_help}"`
 	Header       bool              `group:"output" default:"true" negatable:"" help:"Control whether to show the header row."`
 	Version      bool              `required:"" xor:"entry" help:"Show version and exit."`
