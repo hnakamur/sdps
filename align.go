@@ -24,14 +24,16 @@ func AlignColumns(rows [][]string, alignments []Align) ([][]string, error) {
 		}
 		alignedRows[i] = make([]string, len(row))
 		for j, col := range row {
-			var format string
 			switch alignments[j] {
 			case AlignLeft:
-				format = "%-*s"
+				if j == len(row)-1 {
+					alignedRows[i][j] = fmt.Sprintf("%s", col)
+				} else {
+					alignedRows[i][j] = fmt.Sprintf("%-*s", widths[j], col)
+				}
 			case AlignRight:
-				format = "%*s"
+				alignedRows[i][j] = fmt.Sprintf("%*s", widths[j], col)
 			}
-			alignedRows[i][j] = fmt.Sprintf(format, widths[j], col)
 		}
 	}
 	return alignedRows, nil
